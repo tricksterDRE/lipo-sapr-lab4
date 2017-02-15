@@ -15,7 +15,6 @@
 
     You should have received a copy of the GNU General Public License
     along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
-
 */
 
 #include <stdlib.h>
@@ -25,7 +24,6 @@
 #include "yla_cop.h"
 #include "yla_vm.h"
 #include "yla_type.h"
-
 
 int yla_vm_get_value(yla_vm *vm, yla_int_type *value);
 
@@ -65,11 +63,11 @@ int yla_vm_init(yla_vm *vm, yla_cop_type *program, size_t program_size)
 		vm->last_error = YLA_VM_ERROR_NO_PROGRAM_CODE;
 		return 0;
 	}
-
+	
 	memcpy(vm->code, program + HEADER_SIZE, vm->code_size);
 	
 	vm->last_error = YLA_VM_ERROR_OK;
-
+	
 	return 1;
 }
 
@@ -183,7 +181,14 @@ int yla_vm_get_value(yla_vm *vm, yla_int_type *value)
 		return 0;
 	}
 	
-	*value = yla_vm_get_value_internal(vm->code);
+	yla_cop_type prog_var[2];
+	yla_cop_type *prog_var_ptr = prog_var;
+	
+	prog_var[0] = vm->code[vm->pc];
+	prog_var[1] = vm->code[vm->pc + 1];
+	
+	*value = yla_vm_get_value_internal(prog_var_ptr);
+	
 	vm->pc += sizeof(yla_int_type);
 
 	return 1;
@@ -320,18 +325,76 @@ int yla_vm_stack_push(yla_vm *vm, yla_int_type value)
 	return 1;
 }
 
+int yla_vm_stack_get_deep(yla_vm *vm, yla_int_type index, yla_int_type *value)
+{
+	yla_int_type state = yla_stack_get_deep(&vm->stack, index, value);
+	if (state == -10) {
+		vm->last_error = YLA_VM_ERROR_STACK_EMPTY;
+		return 0;
+	}
+	if (state == -20) {
+		vm->last_error = YLA_VM_ERROR_STACK_FULL;
+		return 0;
+	}
+	return 1;
+}
+
+int yla_vm_stack_set_deep(yla_vm *vm, yla_int_type index, yla_int_type value)
+{
+	yla_int_type state = yla_stack_set_deep(&vm->stack, index, value);
+	if (state == -10) {
+		vm->last_error = YLA_VM_ERROR_STACK_EMPTY;
+		return 0;
+	}
+	if (state == -20) {
+		vm->last_error = YLA_VM_ERROR_STACK_FULL;
+		return 0;
+	}
+	return 1;
+}
+
+int yla_vm_stack_tail_delete(yla_vm *vm, yla_int_type tail_size)
+{
+	if (!yla_stack_tail_delete(&vm->stack, tail_size)) {
+		vm->last_error = YLA_VM_ERROR_STACK_TAIL_TOO_LONG;
+		return 0;	
+	}
+	return 1;
+}
+
 /*
 Perform command by code of operation
 */
 int yla_vm_do_command_internal(yla_vm *vm, yla_cop_type cop)
 {
-	yla_int_type op1;
-	yla_int_type op2;
-	yla_int_type res;
+	yla_int_type op1 = 0;
+	yla_int_type op2 = 0;
+	yla_int_type res = 0;
+	char opchar[5];
 
 	switch(cop) {
 
 		case CNOP:	
+			break;
+		
+		case CLOAD:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			op2 = vm->vartable[op1];
+			if (!yla_vm_stack_push(vm, op2)) {
+				return 0;
+			}
+			break;
+		
+		case CSAVE:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_pull(vm, &op2)) {
+				return 0;
+			}
+			vm->vartable[op1] = op2;
 			break;
 
 		case CPUSH:
@@ -340,6 +403,201 @@ int yla_vm_do_command_internal(yla_vm *vm, yla_cop_type cop)
 			}
 			if (!yla_vm_stack_push(vm, res)) {
 				return 0;
+			}
+			break;
+		
+		case CDUP:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, op1, &op2)) {
+				return 0;
+			}
+			if (!yla_vm_stack_push(vm, op2)) {
+				return 0;
+			}
+			break;
+		
+		case CGDUP:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			op2 = vm->vartable[op1];
+			if (!yla_vm_stack_get_deep(vm, op2, &res)) {
+				return 0;
+			}
+			if (!yla_vm_stack_push(vm, res)) {
+				return 0;
+			}
+			break;
+		
+		case CDEEP:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_pull(vm, &op2)) {
+				return 0;
+			}
+			if (!yla_vm_stack_set_deep(vm, op1, op2)) {
+				return 0;
+			}
+			break;
+			
+		case CGDEEP:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			op2 = vm->vartable[op1];
+			if (!yla_vm_stack_pull(vm, &res)) {
+				return 0;
+			}
+			if (!yla_vm_stack_set_deep(vm, op2, res)) {
+				return 0;
+			}
+			break;
+			
+		case CSTK:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_tail_delete(vm, op1)) {
+				return 0;
+			}
+			break;
+		
+		case CGSTK:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			op2 = vm->vartable[op1];
+			if (!yla_vm_stack_tail_delete(vm, op2)) {
+				return 0;
+			}
+			break;
+		
+		case CTEST:
+			if (!yla_vm_stack_get_deep(vm, 0, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 1, &op2)) {
+				return 0;
+			}
+			if (op1 == op2) {
+				res = 1;
+			} else {
+				res = 0;
+			}
+			if (!yla_vm_stack_push(vm, res)) {
+				return 0;
+			}
+			break;
+		
+		case CCMP:
+			if (!yla_vm_stack_pull(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_pull(vm, &op2)) {
+				return 0;
+			}
+			if (op1 - op2 == 0) {
+				res = 1;
+			} else {
+				res = 0;
+			}
+			if (!yla_vm_stack_push(vm, res)) {
+				return 0;
+			}
+			break;
+			
+		case CALO:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_push(vm, vm->pc))	{
+				return 0;
+			}
+			vm->pc = op1 - 1;
+			break;
+			
+		case CRET:
+			if (!yla_vm_stack_pull(vm, &op1))	{
+				return 0;
+			}
+			vm->pc = op1;
+			break;
+			
+		case CJMP:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			vm->pc = op1 - 1;
+			break;
+		
+		case CJZ:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 0, &op2)) {
+				return 0;
+			}
+			if (op2 == 0) {
+				vm->pc = op1 - 1;
+			}
+			break;
+			
+		case CJNZ:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 0, &op2)) {
+				return 0;
+			}
+			if (op2 != 0) {
+				vm->pc = op1 - 1;
+			}
+			break;
+			
+		case CJE:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 0, &op2)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 1, &res)) {
+				return 0;
+			}
+			if (op2 == res) {
+				vm->pc = op1 - 1;
+			}
+			break;
+			
+		case CJNE:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 0, &op2)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 1, &res)) {
+				return 0;
+			}
+			if (op2 != res) {
+				vm->pc = op1 - 1;
+			}
+			break;
+		case CJG:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 0, &op2)) {
+				return 0;
+			}
+			if (!yla_vm_stack_get_deep(vm, 1, &res)) {
+				return 0;
+			}
+			if (op2 > res) {
+				vm->pc = op1 - 1;
 			}
 			break;
 
@@ -398,7 +656,39 @@ int yla_vm_do_command_internal(yla_vm *vm, yla_cop_type cop)
 				return 0;
 			}
 			break;
-
+		
+		case CNEG:
+			if (!yla_vm_stack_pull(vm, &op1)) {
+				return 0;
+			}
+			res = op1 * (-1);
+			if (!yla_vm_stack_push(vm, res)) {
+				return 0;
+			}
+			break;
+		
+		case COUT:
+			if (!yla_vm_get_value(vm, &op1)) {
+				return 0;
+			}
+			if (!yla_vm_stack_pull(vm, &res)) {
+				return 0;
+			}
+			if (op1 == 0x0001) {
+				if (res >= 0 && res <= 9) {
+					fprintf(stdout, "%d \n", res);
+				} else {
+					fprintf(stdout, "%c \n", res);
+				}
+			} else if (op1 == 0x0000) {
+				if (res >= 0 && res <= 9) {
+					fprintf(stdin, "%d \n", res);
+				} else {
+					fprintf(stdin, "%d \n", res);
+				}
+			}
+			break;
+			
 		case CHALT:
 			return -1;
 
