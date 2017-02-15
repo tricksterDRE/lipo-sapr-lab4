@@ -31,3 +31,6 @@
 # IDEs
 .c9
 
+# Executed files
+tests
+ylavm
